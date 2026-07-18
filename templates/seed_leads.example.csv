@@ -1,0 +1,3 @@
+legal_name,domain,region,country,city,niche,website_url,phone,employee_count,tech_stack,first_name,last_name,job_title,email
+Acme Web Studio,acmewebstudio.com,UK,GB,Manchester,agency,https://acmewebstudio.com,,8,WordPress;PHP,Jane,Doe,Founder,jane@acmewebstudio.com
+Bright Bakes,brightbakes.co,US,US,Austin,bakery,https://brightbakes.co,,5,Shopify,Sam,Rivera,Owner,sam@brightbakes.co

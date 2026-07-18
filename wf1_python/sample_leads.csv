@@ -1,0 +1,7 @@
+legal_name,domain,region,country,city,niche,website_url,phone,employee_count,tech_stack,first_name,last_name,job_title,email
+Cedar & Co Interiors,cedarco.example,US,US,Austin,interior design,https://cedarco.example,,28,WordPress;PHP,Dana,White,Owner,dana@cedarco.example
+Lumen Health Clinic,lumenhealth.example,UK,GB,Manchester,healthcare,,,40,,Priya,Shah,Practice Manager,priya@lumenhealth.example
+Souk Bites,soukbites.example,GCC,AE,Dubai,ecommerce,,,15,Shopify,Ahmed,Nasser,Founder,ahmed@soukbites.example
+Panda Threads,pandathreads.example,CN,CN,Guangzhou,ecommerce,,,22,Magento,,,,
+Nordic Apps,nordicapps.example,EU,SE,Stockholm,saas,,,35,React;Node,Erik,Larsson,CTO,erik@nordicapps.example
+Riyadh Freight,riyadhfreight.example,GCC,SA,Riyadh,logistics,,,55,,Khalid,Omar,Ops Director,khalid@riyadhfreight.example

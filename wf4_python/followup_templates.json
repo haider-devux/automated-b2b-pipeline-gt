@@ -1,0 +1,13 @@
+{
+  "_note": "Generic 4-step follow-up sequence (Phase 4). English-only (the pipeline pitches every region in English). Selected by step kind: nudge -> issue -> check -> breakup. Placeholders {greeting} and {company} are filled at send time; NO sign-off in the body (outreach.py appends the signature). Low-friction, non-spammy copy — no 'floating/bumping/checking in'.",
+  "en": {
+    "subject_prefix": "Re:",
+    "rtl": false,
+    "greeting_named": "Hi {name},",
+    "greeting_generic": "Hi there,",
+    "nudge": "{greeting}\n\nJust following up on my last note. We've noticed that for businesses like {company}, simply cleaning up the mobile version of a website so it's incredibly easy to use is the best way to stop losing customers to competitors. I have a quick, one-sentence suggestion on how to make your site a bit easier for your mobile visitors. If that would be useful, grab 10 minutes on my calendar whenever suits you:",
+    "issue": "{greeting}\n\nI know you're busy running things over at {company}, so I'll keep this brief.\n\nJust wanted to see if you had a moment to look at my last note about making your website a bit easier for mobile visitors? No worries at all if the timing's off — but if you're open to a quick chat, grab a time that works for you here:",
+    "check": "{greeting}\n\nWhen people in the area look for a business like {company}, their first impression usually happens on a smartphone screen — and we love helping local teams make sure that first impression is perfect.\n\nWe specialise in taking the tech headache off your plate so your website just works smoothly in the background. If you'd like to see how we can simplify things for you, pick a 10-minute slot here:",
+    "breakup": "{greeting}\n\nI haven't heard back, so I'll assume the timing isn't right or upgrading your digital setup isn't a priority for {company} right now — entirely fair enough.\n\nI won't crowd your inbox anymore, and I wish you and your team all the best. If things change and you'd like to make your website easier for your customers, just reach back out or book a quick chat here:"
+  }
+}
