@@ -31,7 +31,7 @@ python-dotenv, openpyxl, python-docx, tzdata).
 
 ```bash
 # 1. Clone
-git clone <your-repo-url>
+git clone https://github.com/haider-devux/automated-b2b-pipeline-gt
 cd "B2B Pipeline"
 
 # 2. Create a virtual environment + install dependencies
