@@ -37,6 +37,9 @@ ENRICH_BATCH_SIZE = 25   # how many DISCOVERED leads to claim per run (blueprint
 FREE_HTTP_TIMEOUT = 10          # seconds to wait when fetching a site's HTML
 FREE_DNS_TIMEOUT = 5            # seconds for the MX lookup
 FREE_USER_AGENT = "GranjurBot/0.1 (+https://granjur.com; enrichment)"
+# Politeness pause between site fetches (between a lead's Contact/About pages, and between leads) so
+# bot-enrich never hammers a single host and stays a courteous crawler. Env: ENRICH_FETCH_DELAY.
+FREE_FETCH_DELAY = float(os.getenv("ENRICH_FETCH_DELAY", "0.5"))
 # Optional: a FREE Google PageSpeed Insights key enables Lighthouse scoring. Leave blank to skip.
 PAGESPEED_API_KEY = os.getenv("PAGESPEED_API_KEY", "")
 

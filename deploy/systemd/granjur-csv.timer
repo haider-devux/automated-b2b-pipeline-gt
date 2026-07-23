@@ -1,0 +1,10 @@
+# bot-csv: Fiverr/Upwork/LinkedIn lane — ingest any CSV dropped in inbox/. Hourly. Zero flag risk.
+[Unit]
+Description=Timer for bot-csv (inbox CSV ingest)
+
+[Timer]
+OnCalendar=*-*-* *:05:00
+Unit=granjur@csv.service
+
+[Install]
+WantedBy=timers.target

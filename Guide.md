@@ -254,15 +254,21 @@ Goal: a single command that runs the **whole** pipeline hands-off and lines up *
 **`export_leads_csv.py` — retrieved-data export, `.xlsx` only** (run by the pipeline; also standalone:
 `python scripts/export_leads_csv.py`). One row per lead mapped to the outreach schema: contact/firmographic,
 OSM (address falls back to "city, country"; coordinates left blank — see gotchas), job-board intent, and
-personalization. **Everything is Excel — no more CSV files** (opens in Excel 2010+). Two kinds of file live
+personalization. **Everything is Excel — no more CSV files** (opens in Excel 2010+). Three kinds of file live
 in `exports/`:
+- **Discovery lake** → `exports/discovered.xlsx` — one row per **company** (all of them), every raw field we
+  found (domain, phone, source, gmaps rating/reviews, tech, `first_seen_at`, status, email…), **no
+  segmentation**. Plus a **By Source** sheet counting each bot's contribution (osm / gmaps / remoteok /
+  remotive / csv). A live DB mirror, rebuilt each run. This is "everything the bots ever found".
 - **Per-run snapshot** → `exports/granjur_report_<ts>.xlsx` — a frozen picture of the whole DB at the moment
   one run finished (sheets: **Summary** status counts + **Companies** full detail). We keep the most recent
   **8** and auto-prune older ones so the folder stays tidy.
-- **One central database** → `exports/granjur_central.xlsx` — the master file that **accumulates every run's
+- **One central database** → `exports/granjur_central.xlsx` — the pipeline CRM that **accumulates every run's
   info together**. Three sheets: **Summary** (current counts), **Runs Log** (one appended row per run: timestamp
   + the stage breakdown that day + which snapshot file), **Latest Leads** (the full current list, refreshed live
-  each export). This is the file to open for "the whole database in one place".
+  each export, now with the **status journey**: `discovered_at · enriched_at · qualified_at · queued_at ·
+  contacted_at · replied_at · last_activity`, derived from `lead_events`). Open this for "the whole database in
+  one place"; `discovered.xlsx ⊇ this` (join on `company_id`/`domain`).
 - The dashboard **Analytics → "Download central Excel database"** button (`/report.xlsx`) serves this same
   central file, refreshed live from the DB on each click (a plain download does **not** add a Runs Log row —
   only a real pipeline run does).
@@ -351,7 +357,7 @@ Omit `--send` to keep the human review gate (recommended for real sends). `--reg
 stage to one market (US/EU/UK/GCC/CN/AU).
 
 **Or run phases individually** (each from its own folder, with the venv Python; all accept `--region XX`):
-- WF-1 discovery: `wf1_python/collect_osm.py` (OSM), `collect_jobs.py` (RemoteOK), `wf1.py <csv>` (CSV import). Human-paste leads (LinkedIn/Upwork/Fiverr) now come in via CSV only — the manual Review tab was removed.
+- WF-1 discovery: `wf1_python/collect_osm.py` (OSM), `collect_jobs.py [remoteok|remotive]` (job feeds), `collect_maps.py` (Google Maps scrape — needs Playwright + a proxy), `wf1.py <csv>` (CSV import for LinkedIn/Upwork/Fiverr leads). All collectors are governed by `scripts/governor.py` (daily caps + rest/backoff) and dedup by domain; OSM caches geocodes in `city_bbox`. See `DEPLOYMENT_PLAN.md` for the full bot fleet + anti-flag design.
 - WF-2 enrich: `wf2_python/wf2.py` (mode set by `config.ENRICH_MODE` = `free`).
 - WF-3 qualify+pitch: `wf3_python/wf3.py` (SLOW — ~1–2 min LLM pitch per qualified lead).
 - WF-4 outreach: approve pitches on the dashboard **Outreach** tab → `wf4_python/wf4.py` (dry-run send, gated by send-window + warmup) → `webhook_server.py` (port 5001, inbound events).
@@ -386,16 +392,23 @@ persistently), `GRANJUR_BOOKING_LINK` (Google Calendar booking page for the CTA 
 
 Per the PDF ("bots discover, humans act"), discovery is automatic; the human reviews the **pitch** before
 outreach — NOT every company.
-- **Collectors** (`collect_osm.py`, `collect_jobs.py`) + manual Add → write to `discovery_candidates`.
+- **Collectors** (`collect_osm.py`, `collect_jobs.py`, `collect_maps.py`) + CSV import → write to
+  `discovery_candidates`. Every collector calls **`scripts/governor.py`** first (per-source daily caps +
+  a `rest_until` backoff on rate-limits/blocks), so a cron loop can never hammer a source into a ban.
 - **`intake.py`** auto-evaluates each against **`targets.py`** (regions, employee range, chain blocklist)
   → auto-APPROVE (becomes DISCOVERED) / auto-REJECT / (rarely) leave PENDING for a human.
 - **Free sources, all real data:**
   - **OpenStreetMap** — `collect_osm.py` **geocodes the city via Nominatim → bounding box → Overpass**
     query (works for ANY city worldwide: proven for Dubai/Riyadh, Berlin, Sydney, Austin, Manchester; CN
-    can hit transient 429). `[!"brand"]` excludes chains. Top-of-file knobs: `PER_CELL`=2 (NEW leads
-    wanted per city) and `FETCH_POOL`=60 (how many candidates to pull, then keep PER_CELL *new* ones).
-  - **Job boards** — `collect_jobs.py` pulls dev-hiring companies from **RemoteOK + Remotive** (Segment B intent).
-  - **LinkedIn / Fiverr / Upwork = human paste only** (ban risk) → CSV import (`wf1.py <csv>`); the manual dashboard Add form was removed (automation-only).
+    can hit transient 429). `[!"brand"]` excludes chains. Geocodes are **cached in `city_bbox`** so a city
+    is only ever hit once on Nominatim. Top-of-file knobs: `PER_CELL`=5, `FETCH_POOL`=90.
+  - **Job boards** — `collect_jobs.py [remoteok|remotive]` pulls dev-hiring companies from **RemoteOK +
+    Remotive** (Segment B intent); each feed is governed separately (≤6 pulls/day, backoff on 429).
+  - **Google Maps** — `collect_maps.py` scrapes Maps directly behind a **5-layer safety trigger** (per-run
+    + per-day caps, min-interval, a CAPTCHA/consent **block detector**, randomized delays). Needs Playwright
+    + a residential proxy (`GMAPS_PROXIES`); stays inert without them. Highest-risk bot — see `DEPLOYMENT_PLAN.md §4.1`.
+  - **LinkedIn / Fiverr / Upwork = CSV lane only** (ban risk) → drop a CSV in `inbox/` (`bot-csv`) or run
+    `wf1.py <csv>`; the server never scrapes those platforms.
 - **DIVERSITY (10 Jul)** — the collector no longer refetches the same top-2 each run. It pulls a big
   `FETCH_POOL`, **shuffles**, and keeps only PER_CELL companies **not already in the DB** (intake dedupes on
   domain), so each run surfaces DIFFERENT businesses until a city is exhausted. And the no-arg sweep now

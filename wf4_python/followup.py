@@ -17,11 +17,15 @@ Every send passes the SAME gates as the initial email:
 """
 import argparse
 import os
+import random
 import sys
+import time
 from datetime import datetime, timezone
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wf3_python"))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 import sendwindows  # noqa: E402
+import governor     # noqa: E402
 
 import db
 import domain_health
@@ -29,6 +33,11 @@ import followup_copy
 import outreach
 import revalidate
 import send_gmail
+
+# Follow-ups are real sends too — same anti-burst drip + bounce breaker as wf4.py (shared knobs).
+SEND_JITTER_MIN = float(os.getenv("GRANJUR_SEND_JITTER_MIN", "45"))
+SEND_JITTER_MAX = float(os.getenv("GRANJUR_SEND_JITTER_MAX", "120"))
+SEND_BOUNCE_PARK_HOURS = float(os.getenv("GRANJUR_SEND_BOUNCE_PARK_HOURS", "18"))
 
 
 def _p(s):
@@ -105,8 +114,22 @@ def main():
                              + "; ".join(f"{c['name']}: {c['detail']}" for c in auth_fail))
         cap, used0 = w["cap"], w["sent_today"]
 
+        # Same Phase-7 guard as the initial send: honor a governor 'send' rest + the bounce breaker.
+        if not outreach.DRY_RUN and not args.test:
+            gs = governor.can_run(conn, "send")
+            if not gs["ok"] and not args.ignore_window:
+                raise SystemExit(f"bot-send is resting ({gs['reason']}) until {gs['rest_until']}. "
+                                 "Fix the cause, then pass --ignore-window to override once.")
+            bs = domain_health.bounce_stats(conn)
+            if bs["tripped"]:
+                governor.park(conn, "send", hours=SEND_BOUNCE_PARK_HOURS, reason="bounce breaker")
+                raise SystemExit(
+                    f"Refusing to send follow-ups: bounce rate {bs['rate']:.1%} over {bs['window_days']}d "
+                    f"({bs['bounces']}/{bs['sends']}) exceeds the {bs['ceil']:.0%} ceiling. Parked "
+                    f"{SEND_BOUNCE_PARK_HOURS:.0f}h.")
+
         sent = held = suppressed = failed = 0
-        for l, plan in due:
+        for i, (l, plan) in enumerate(due):
             step = plan["step"]
             if revalidate.check(l["email"]) == "invalid":
                 if not args.test:
@@ -168,6 +191,12 @@ def main():
             sent += 1
             tag = "logged [DRY RUN]" if outreach.DRY_RUN else f"SENT -> {l['email']}"
             _p(f"  FOLLOW-UP  {l['legal_name']:<26} -> f{step}/{lang} ({plan['kind']}) {tag}")
+
+            # Anti-burst drip on real follow-up sends (never after the last, never in dry-run/test).
+            if not outreach.DRY_RUN and not args.test and i < len(due) - 1:
+                delay = random.uniform(SEND_JITTER_MIN, SEND_JITTER_MAX)
+                _p(f"             ...cooling down {delay:.0f}s before next send (anti-burst)")
+                time.sleep(delay)
 
         verb = "previewed" if args.test else ("logged (DRY RUN)" if outreach.DRY_RUN else "SENT")
         print(f"\nDone. {sent} follow-up(s) {verb}, {held} held (window/warmup), "

@@ -1,0 +1,10 @@
+# bot-remotive: Remotive job feed (free API). ~every 4h, OFFSET from RemoteOK. Governor caps ≤6 pulls/day.
+[Unit]
+Description=Timer for bot-remotive (Remotive job feed)
+
+[Timer]
+OnCalendar=*-*-* 09,13,17:45:00
+Unit=granjur@remotive.service
+
+[Install]
+WantedBy=timers.target

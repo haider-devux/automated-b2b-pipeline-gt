@@ -1,0 +1,10 @@
+# bot-followup: drip nudges for un-replied leads. Twice daily. Shares the send budget + bounce breaker + jitter.
+[Unit]
+Description=Timer for bot-followup (WF-4 follow-up drip)
+
+[Timer]
+OnCalendar=*-*-* 09,14:30:00
+Unit=granjur@followup.service
+
+[Install]
+WantedBy=timers.target

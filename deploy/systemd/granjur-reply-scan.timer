@@ -1,0 +1,10 @@
+# bot-reply-scan: IMAP reply detection (read-only) -> marks REPLIED, stops the drip. Every 15 min, all day.
+[Unit]
+Description=Timer for bot-reply-scan (WF-4 reply detection)
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+Unit=granjur@reply-scan.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+# bot-remoteok: RemoteOK job feed (free API). ~every 4h, business hours. Governor caps ≤6 pulls/day.
+[Unit]
+Description=Timer for bot-remoteok (RemoteOK job feed)
+
+[Timer]
+OnCalendar=*-*-* 09,13,17:15:00
+Unit=granjur@remoteok.service
+
+[Install]
+WantedBy=timers.target

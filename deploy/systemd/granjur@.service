@@ -1,0 +1,19 @@
+# Templated oneshot service for every Granjur bot.  granjur@<bot>.service -> run_bot.sh <bot>
+# systemd will NOT start a second instance of the same bot while one is still running, so ticks never
+# overlap (no flock needed). Adjust User/paths to your install, then `systemctl daemon-reload`.
+[Unit]
+Description=Granjur bot: %i
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=granjur
+Group=granjur
+WorkingDirectory=/opt/granjur
+# Optional (leading '-' = don't fail if missing). Holds secrets + governor knobs; keep KEY=VALUE lines.
+EnvironmentFile=-/opt/granjur/.env
+ExecStart=/opt/granjur/deploy/run_bot.sh %i
+# A bot that is resting/capped exits 0 (clean no-op). Real failures are visible in the journal.
+Nice=10
+TimeoutStartSec=1800

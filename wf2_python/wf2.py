@@ -7,6 +7,8 @@ Integrates with the rest of the pipeline ONLY through the leads.status column. S
 
 Run:  python wf2.py
 """
+import time
+
 import config
 import db
 import enrich
@@ -64,7 +66,9 @@ def main():
             return
 
         print(f"Claimed {len(leads)} lead(s) -> ENRICHING. Enriching...\n")
-        for lead in leads:
+        for i, lead in enumerate(leads):
+            if i:
+                time.sleep(config.FREE_FETCH_DELAY)   # polite pacing between leads (different hosts)
             try:
                 summary = process_lead(conn, lead)
                 conn.commit()   # one lead = one transaction; a failure can't undo the others

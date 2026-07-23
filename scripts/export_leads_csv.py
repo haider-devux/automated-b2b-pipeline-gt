@@ -32,6 +32,7 @@ import importlib.util
 import os
 import re
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -42,6 +43,7 @@ from psycopg2.extras import RealDictCursor
 ROOT = Path(__file__).resolve().parent.parent  # scripts/ -> project root
 EXPORT_DIR = ROOT / "exports"
 CENTRAL_NAME = "granjur_central.xlsx"          # the one accumulating master file
+DISCOVERED_NAME = "discovered.xlsx"            # the raw discovery lake (one row per company)
 SNAPSHOT_GLOB = "granjur_report_*.xlsx"        # per-run frozen snapshots
 KEEP_SNAPSHOTS = 8                             # prune older snapshots beyond this many
 
@@ -72,7 +74,29 @@ COLUMNS = [
     "tech_stack_mentioned",
     # pipeline / CRM columns
     "region", "pipeline_status", "icp_segment", "email_status", "phone",
+    # status journey — first time each stage was reached (derived from lead_events)
+    "discovered_at", "enriched_at", "qualified_at", "queued_at", "contacted_at", "replied_at",
+    "last_activity",
 ]
+
+# The raw "discovery lake" schema for discovered.xlsx — one row per COMPANY, every field we captured,
+# no segmentation/curation. (companies table, latest lead's status/email joined on.)
+DISCOVERED_COLUMNS = [
+    "company_id", "company_name", "domain", "website", "phone",
+    "region", "country", "city", "coordinates",
+    "niche", "source", "discovery_cell",
+    "gmaps_rating", "gmaps_reviews",
+    "employee_count", "tech_stack", "hiring_signals", "intent_strings",
+    "lighthouse_mobile", "funding_stage",
+    "first_seen_at", "last_verified_at",
+    "status", "email", "email_status",
+]
+
+# lead_events.to_status -> the journey column it stamps (first time that stage was reached).
+_STAGE_TS_MAP = {
+    "DISCOVERED": "discovered_at", "ENRICHED": "enriched_at", "QUALIFIED": "qualified_at",
+    "QUEUED_FOR_OUTREACH": "queued_at", "CONTACTED": "contacted_at", "REPLIED": "replied_at",
+}
 
 # Leads we actually gathered (skip the internal ERROR/parked rows unless --all is passed).
 _REAL_STATUSES = ("DISCOVERED", "ENRICHING", "ENRICHED", "QUALIFYING", "QUALIFIED",
@@ -84,6 +108,7 @@ _SQL = """
         c.legal_name, c.domain, c.website_url, c.phone, c.region, c.country, c.city,
         c.niche, c.employee_count, c.tech_stack, c.active_job_posts, c.intent_strings,
         c.raw_payload,
+        l.id AS lead_id,
         l.email, l.first_name, l.last_name, l.linkedin_url, l.job_title, l.seniority,
         l.status, l.icp_segment, l.email_validation_status,
         l.pitch_subject, l.pitch_body
@@ -93,9 +118,37 @@ _SQL = """
     ORDER BY c.region, c.legal_name;
 """
 
+# discovered.xlsx source: one row per COMPANY (all of them), with the latest lead's status/email.
+_SQL_COMPANIES = """
+    SELECT
+        c.id, c.legal_name, c.domain, c.website_url, c.phone, c.region, c.country, c.city,
+        c.niche, c.employee_count, c.gmaps_rating, c.gmaps_reviews, c.tech_stack,
+        c.lighthouse_mobile, c.active_job_posts, c.intent_strings, c.funding_stage,
+        c.source, c.discovery_cell, c.raw_payload, c.first_seen_at, c.last_verified_at,
+        l.status, l.email, l.email_validation_status
+    FROM companies c
+    LEFT JOIN LATERAL (
+        SELECT status, email, email_validation_status
+        FROM leads WHERE company_id = c.id
+        ORDER BY created_at DESC LIMIT 1
+    ) l ON true
+    ORDER BY c.first_seen_at DESC, c.legal_name;
+"""
+
 
 def _stamp():
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+
+def _fmt_ts(ts):
+    """Format a timestamp for a cell as a plain string. openpyxl can't store tz-aware datetimes, so we
+    always render to text — no timezone crash, and it sorts fine in Excel."""
+    if not ts:
+        return ""
+    try:
+        return ts.strftime("%Y-%m-%d %H:%M")
+    except AttributeError:
+        return str(ts)
 
 
 def _first_sentence(text):
@@ -154,13 +207,16 @@ def _osm_address(row, raw):
     return ", ".join(p for p in parts if p)
 
 
-def build_row(row):
+def build_row(row, journey=None):
+    """One central-file row (lead + company). `journey` is this lead's {stage: datetime} map from
+    stage_timestamps(); its columns are rendered as text so Excel never chokes on tz-aware datetimes."""
+    journey = journey or {}
     raw = row.get("raw_payload") or {}
     tech = list(row.get("tech_stack") or [])
     jobs = _jobs_list(row.get("active_job_posts"))
     job = jobs[0] if jobs else None
     website = row.get("website_url") or (("https://" + row["domain"]) if row.get("domain") else "")
-    return {
+    base = {
         "company_name": row.get("legal_name") or "",
         "website": website,
         "contact_first_name": row.get("first_name") or "",
@@ -184,6 +240,49 @@ def build_row(row):
         "icp_segment": row.get("icp_segment") or "",
         "email_status": row.get("email_validation_status") or "",
         "phone": row.get("phone") or "",
+    }
+    # status journey (first time each stage was reached) — always text via _fmt_ts
+    for stage_col in ("discovered_at", "enriched_at", "qualified_at", "queued_at",
+                      "contacted_at", "replied_at", "last_activity"):
+        base[stage_col] = _fmt_ts(journey.get(stage_col))
+    return base
+
+
+def build_company_row(row):
+    """One discovered.xlsx row — the raw discovery record for a company (everything we found)."""
+    raw = row.get("raw_payload") or {}
+    jobs = _jobs_list(row.get("active_job_posts"))
+    website = row.get("website_url") or (("https://" + row["domain"]) if row.get("domain") else "")
+
+    def _n(v):
+        return v if v is not None else ""
+
+    return {
+        "company_id": str(row.get("id") or ""),
+        "company_name": row.get("legal_name") or "",
+        "domain": row.get("domain") or "",
+        "website": website,
+        "phone": row.get("phone") or "",
+        "region": row.get("region") or "",
+        "country": row.get("country") or "",
+        "city": row.get("city") or "",
+        "coordinates": _coordinates(raw),
+        "niche": row.get("niche") or "",
+        "source": row.get("source") or "",
+        "discovery_cell": row.get("discovery_cell") or "",
+        "gmaps_rating": float(row["gmaps_rating"]) if row.get("gmaps_rating") is not None else "",
+        "gmaps_reviews": _n(row.get("gmaps_reviews")),
+        "employee_count": _n(row.get("employee_count")),
+        "tech_stack": ";".join(list(row.get("tech_stack") or [])),
+        "hiring_signals": "; ".join(j.get("title", "") for j in jobs if j.get("title")),
+        "intent_strings": ";".join(list(row.get("intent_strings") or [])),
+        "lighthouse_mobile": _n(row.get("lighthouse_mobile")),
+        "funding_stage": row.get("funding_stage") or "",
+        "first_seen_at": _fmt_ts(row.get("first_seen_at")),
+        "last_verified_at": _fmt_ts(row.get("last_verified_at")),
+        "status": row.get("status") or "",
+        "email": row.get("email") or "",
+        "email_status": row.get("email_validation_status") or "",
     }
 
 
@@ -216,21 +315,56 @@ def status_counts(conn):
         return dict(cur.fetchall())
 
 
+def stage_timestamps(conn):
+    """Return {lead_id(str): {enriched_at: dt, queued_at: dt, ..., last_activity: dt}} — the FIRST time
+    each lead reached each tracked stage (plus its most recent activity), from the lead_events log."""
+    out = {}
+    with conn.cursor() as cur:
+        cur.execute("""SELECT lead_id, to_status::text, MIN(at)
+                         FROM lead_events
+                        WHERE to_status::text = ANY(%s)
+                        GROUP BY lead_id, to_status;""", (list(_STAGE_TS_MAP.keys()),))
+        for lead_id, status, ts in cur.fetchall():
+            col = _STAGE_TS_MAP.get(status)
+            if col and lead_id is not None:
+                out.setdefault(str(lead_id), {})[col] = ts
+        cur.execute("SELECT lead_id, MAX(at) FROM lead_events WHERE lead_id IS NOT NULL GROUP BY lead_id;")
+        for lead_id, ts in cur.fetchall():
+            out.setdefault(str(lead_id), {})["last_activity"] = ts
+    return out
+
+
 def fetch_rows_and_counts(conn=None):
-    """Pull every lead (all statuses) + the per-status counts in one shot. Returns (rows, counts)."""
+    """Pull every lead (all statuses) + per-status counts + the journey timestamps. Returns (rows, counts)."""
     close = False
     if conn is None:
         conn = get_connection()
         close = True
     try:
         counts = status_counts(conn)
+        journey = stage_timestamps(conn)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(_SQL.format(where=""))          # ALL leads, every status
-            rows = [build_row(r) for r in cur.fetchall()]
+            rows = [build_row(r, journey.get(str(r.get("lead_id")))) for r in cur.fetchall()]
     finally:
         if close:
             conn.close()
     return rows, counts
+
+
+def fetch_company_rows(conn=None):
+    """Pull EVERY company (raw discovery lake) for discovered.xlsx. Returns a list of built rows."""
+    close = False
+    if conn is None:
+        conn = get_connection()
+        close = True
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(_SQL_COMPANIES)
+            return [build_company_row(r) for r in cur.fetchall()]
+    finally:
+        if close:
+            conn.close()
 
 
 # ----------------------------------------------------------------- styling helpers
@@ -281,9 +415,69 @@ def _fill_companies_sheet(ws, rows):
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}{len(rows) + 1}"
     widths = {"company_name": 26, "website": 30, "contact_email": 30, "osm_address": 24,
-              "tech_stack_mentioned": 20, "pipeline_status": 20, "osm_category": 18}
+              "tech_stack_mentioned": 20, "pipeline_status": 20, "osm_category": 18,
+              "discovered_at": 16, "enriched_at": 16, "qualified_at": 16, "queued_at": 16,
+              "contacted_at": 16, "replied_at": 16, "last_activity": 16}
     for i, col in enumerate(COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = widths.get(col, 14)
+
+
+# ----------------------------------------------------------------- discovered.xlsx (raw discovery lake)
+def _fill_discovered_sheet(ws, rows):
+    from openpyxl.styles import Alignment
+    from openpyxl.utils import get_column_letter
+    st = _styles()
+    ws.append(DISCOVERED_COLUMNS)
+    for c in range(1, len(DISCOVERED_COLUMNS) + 1):
+        cell = ws.cell(1, c); cell.font = st["head_font"]; cell.fill = st["head_fill"]
+        cell.alignment = Alignment(vertical="center")
+    for row in rows:
+        ws.append([row.get(k, "") for k in DISCOVERED_COLUMNS])
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(DISCOVERED_COLUMNS))}{len(rows) + 1}"
+    widths = {"company_id": 38, "company_name": 26, "domain": 22, "website": 30, "email": 28,
+              "tech_stack": 22, "hiring_signals": 26, "intent_strings": 20, "discovery_cell": 18,
+              "first_seen_at": 17, "last_verified_at": 17, "status": 18, "coordinates": 18}
+    for i, col in enumerate(DISCOVERED_COLUMNS, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = widths.get(col, 13)
+
+
+def _fill_by_source_sheet(ws, rows):
+    """Small summary: how many companies each bot/source contributed — the at-a-glance fleet scoreboard."""
+    st = _styles()
+    ws["A1"] = "Discovered — by source (which bot found it)"; ws["A1"].font = st["title_font"]
+    ws["A2"] = f"Generated {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}   ·   {len(rows)} compan(ies) total"
+    counts = Counter((r.get("source") or "unknown") for r in rows)
+    r = 4
+    for c, label in ((1, "SOURCE"), (2, "COMPANIES")):
+        cell = ws.cell(r, c, label); cell.font = st["head_font"]; cell.fill = st["head_fill"]
+    r += 1
+    for src, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        ws.cell(r, 1, src)
+        ws.cell(r, 2, n)
+        r += 1
+    ws.cell(r, 1, "TOTAL").font = st["bold"]
+    ws.cell(r, 2, sum(counts.values())).font = st["bold"]
+    ws.column_dimensions["A"].width = 20
+    ws.column_dimensions["B"].width = 14
+
+
+def write_discovered(rows, out_path=None):
+    """Write the raw discovery lake (discovered.xlsx): a Discovered sheet (one row per company, every
+    field) + a By Source summary. Live DB mirror — rebuilt each run. Returns (path, n_rows).
+    Swallows a save error (e.g. the file open in Excel) so it never crashes the pipeline run."""
+    from openpyxl import Workbook
+    out_path = Path(out_path or (EXPORT_DIR / DISCOVERED_NAME))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    _fill_discovered_sheet(wb.active, rows)
+    wb.active.title = "Discovered"
+    _fill_by_source_sheet(wb.create_sheet("By Source"), rows)
+    try:
+        wb.save(out_path)
+    except Exception:  # noqa: BLE001 — locked open in Excel etc.; don't fail the run
+        pass
+    return out_path, len(rows)
 
 
 # ----------------------------------------------------------------- snapshot (per-run frozen file)
@@ -463,6 +657,16 @@ def export_xlsx(out_path=None, conn=None, central=True):
     if out_path is None:
         out_path = EXPORT_DIR / f"granjur_report_{stamp}.xlsx"
     snap = write_snapshot(rows, counts, out_path)
+
+    # discovered.xlsx — the raw discovery lake (one row per company, live DB mirror). Written EVERY run,
+    # independent of the central flag. Never let it crash the run (its own save is already guarded).
+    try:
+        drows = fetch_company_rows(conn)
+        dpath, dn = write_discovered(drows)
+        print(f"  Wrote discovery lake: {dn} compan(ies) -> {dpath}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  discovered.xlsx export failed: {e}")
+
     if central:
         refresh_central(rows, counts, stamp, snapshot_name=snap.name, add_run_row=True)
         _prune_snapshots()
@@ -483,6 +687,7 @@ def export_csv(out_path=None, status=None, include_all=False, conn=None):
             where, params = "", ()
         else:
             where, params = "WHERE l.status::text = ANY(%s)", (list(_REAL_STATUSES),)
+        journey = stage_timestamps(conn)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(_SQL.format(where=where), params)
             rows = cur.fetchall()
@@ -498,7 +703,7 @@ def export_csv(out_path=None, status=None, include_all=False, conn=None):
         w = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")  # build_row has extra keys; drop them
         w.writeheader()
         for r in rows:
-            w.writerow(build_row(r))
+            w.writerow(build_row(r, journey.get(str(r.get("lead_id")))))
     return out_path, len(rows)
 
 

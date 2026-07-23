@@ -15,6 +15,10 @@ tzdata==2026.3          # IANA timezones for send-window scheduling (required on
 # --- Optional ---
 # pandas>=2.0           # faster bulk registry/quota CSV import (scripts/import_public_registry.py,
 #                       # scripts/get_quota_leads.py). If absent, the code falls back to the stdlib csv module.
+# playwright>=1.44      # REQUIRED ONLY for bot-gmaps (Google Maps scraper, wf1_python/collect_maps.py).
+#                       # After install:  playwright install chromium
+#                       # Also set GMAPS_PROXIES (rotating residential proxies) — see DEPLOYMENT_PLAN.md §4.1.
+#                       # None of the other bots need it; leave commented if you don't run bot-gmaps.
 
 # --- Pulled in automatically as sub-dependencies of the above (listed for a fully pinned lock) ---
 Jinja2==3.1.6

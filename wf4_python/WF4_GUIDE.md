@@ -19,8 +19,18 @@ QUALIFIED
 | `config.py` | reuse WF-3's DB password |
 | `outreach.py` | build the Instantly/Smartlead payload + CAN-SPAM footer; `DRY_RUN` flag; dry-run log |
 | `db.py` | send-gate query, queue lead, mark contacted, inbound event handlers |
-| `wf4.py` | the DRY-RUN sender (QUEUED_FOR_OUTREACH → CONTACTED) |
+| `wf4.py` | the sender (QUEUED_FOR_OUTREACH → CONTACTED); dry-run unless `GRANJUR_DRY_RUN=0` |
+| `followup.py` | threaded follow-up drip (shares the send day-budget) |
+| `domain_health.py` | SPF/DKIM/DMARC/blacklist + warmup cap + `bounce_stats()` breaker math |
 | `webhook_server.py` | always-on Flask service (port 5001) for reply/booking/bounce/unsubscribe |
+
+> **Server send-safety (Phase 7).** As bot-send, `wf4.py` and `followup.py` share these anti-flag guards:
+> the fresh-mailbox **warmup cap** (5→50/day by age) + per-recipient **local-time windows**; an **anti-burst
+> drip** — real sends are spaced a randomized **45–120s** apart (`GRANJUR_SEND_JITTER_MIN/MAX`); a **bounce
+> circuit-breaker** — if the trailing-window bounce rate crosses `GRANJUR_BOUNCE_RATE_CEIL` (3%) they park
+> the `send` governor bucket and refuse to send; and they honor any `send` rest set by the governor (e.g. a
+> health-driven pause). Under cron, `bot-send` runs a small **drip of ~5 emails/tick** (`GRANJUR_SEND_DRIP`).
+> See `DEPLOYMENT_PLAN.md §4.7` and `scripts/governor.py`.
 
 ## Setup + run
 ```powershell

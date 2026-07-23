@@ -15,9 +15,20 @@ import sys
 import time
 from urllib.parse import urlparse
 import requests
+
+# Governor lives in scripts/ (shared across the fleet). APPEND so wf1_python's own db/config still win.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
+import governor  # noqa: E402
+
 import db
 import intake
 import targets
+
+SOURCE = "osm"
+# Generous daily ceiling (OSM is free + low-risk; the real guards are the bbox cache + Overpass backoff).
+OSM_MAX_PER_DAY = int(os.getenv("OSM_MAX_PER_DAY", "200"))
+# How long to rest bot-osm when every Overpass mirror is failing (transient overload / soft rate-limit).
+OSM_BACKOFF_HOURS = float(os.getenv("OSM_BACKOFF_HOURS", "1"))
 
 # public Overpass mirrors (often overloaded -> try in turn)
 OVERPASS_URLS = [
@@ -112,15 +123,27 @@ def _to_candidate(el, region, city, niche_hint):
 
 
 def collect_cell(conn, region, city, niche_hint):
-    print(f"\n[{region} - {city} - {niche_hint}] geocoding + querying OpenStreetMap...")
-    try:
-        bbox = _geocode(city, region)
-    except Exception as e:  # noqa: BLE001
-        print(f"  geocode failed: {e}")
-        return
+    """Collect one city cell. Returns a status: 'ok' | 'geocode_fail' | 'overpass_fail' | 'capped'.
+    Uses the bbox cache so a city is geocoded via Nominatim ONCE, then records approved leads to the
+    governor's daily counter (bot-osm)."""
+    print(f"\n[{region} - {city} - {niche_hint}] querying OpenStreetMap...")
+    # Layer 2 (per-day cap): don't start a new cell if bot-osm has hit its daily ceiling.
+    if not governor.can_run(conn, SOURCE, day_cap=OSM_MAX_PER_DAY)["ok"]:
+        print("  osm daily cap reached — skipping cell (will resume tomorrow)")
+        return "capped"
+
+    # Nominatim ONCE per city: serve the bounding box from cache; only geocode on a miss.
+    bbox = db.get_cached_bbox(conn, region, city)
     if not bbox:
-        print(f"  could not locate '{city}' - skipping")
-        return
+        try:
+            bbox = _geocode(city, region)
+        except Exception as e:  # noqa: BLE001
+            print(f"  geocode failed: {e}")
+            return "geocode_fail"
+        if not bbox:
+            print(f"  could not locate '{city}' - skipping")
+            return "geocode_fail"
+        db.cache_bbox(conn, region, city, bbox)   # persist so we never re-hit Nominatim for this city
     try:
         # Pull a big pool, then keep only PER_CELL *new* ones. intake.submit() dedupes on domain
         # (already-in-DB companies come back 'duplicate'), so each run surfaces DIFFERENT businesses
@@ -128,7 +151,7 @@ def collect_cell(conn, region, city, niche_hint):
         elements = _overpass(_query(bbox, FETCH_POOL))
     except Exception as e:  # noqa: BLE001
         print(f"  Overpass error: {e}")
-        return
+        return "overpass_fail"
     random.shuffle(elements)   # vary which candidates we try each run (more variety, less repetition)
     tally = {"approve": 0, "reject": 0, "review": 0, "duplicate": 0}
     scanned = 0
@@ -139,11 +162,15 @@ def collect_cell(conn, region, city, niche_hint):
         if not cand:
             continue
         scanned += 1
-        tally[intake.submit(conn, cand, "osm")] += 1
+        verdict = intake.submit(conn, cand, "osm")
+        tally[verdict] += 1
+        if verdict == "approve":
+            governor.record(conn, SOURCE, 1)     # count toward the daily ceiling
     got = tally["approve"]
     depleted = " (city looks exhausted — rotation will move on)" if got < PER_CELL else ""
     print(f"  scanned {scanned}/{len(elements)} -> {got} NEW approved (target {PER_CELL}){depleted}; "
           f"skipped {tally['duplicate']} already-seen, {tally['reject']} rejected, {tally['review']} to review")
+    return "ok"
 
 
 def _next_rotation():
@@ -197,10 +224,27 @@ def main():
         cells = _rotated_cells(only_region)
     conn = db.get_connection()
     try:
+        # Layers 2 + 3: if bot-osm is resting (Overpass backoff) or capped for the day, no-op and exit.
+        g = governor.can_run(conn, SOURCE, day_cap=OSM_MAX_PER_DAY)
+        if not g["ok"]:
+            print(f"[osm] not running ({g['reason']}); day {g['day_count']}/{OSM_MAX_PER_DAY}. Exiting clean.")
+            return
+        governor.start_run(conn, SOURCE)
+
+        overpass_failed = False
         for i, (region, city, niche) in enumerate(cells):
             if i:
                 time.sleep(3)   # be polite to the free Nominatim + Overpass servers
-            collect_cell(conn, region, city, niche)
+            if collect_cell(conn, region, city, niche) == "overpass_fail":
+                overpass_failed = True
+
+        # Layer 4: every mirror failing looks like an overload/soft rate-limit — rest before retrying.
+        if overpass_failed:
+            mins = governor.back_off(conn, SOURCE, OSM_BACKOFF_HOURS, OSM_BACKOFF_HOURS,
+                                     reason="overpass mirrors failing")
+            print(f"[osm] Overpass unavailable -> resting ~{mins} min before the next run.")
+        else:
+            governor.reset_fail(conn, SOURCE)   # clean run — clear any prior backoff streak
     finally:
         conn.close()
     print("\nDone. Approved candidates are now DISCOVERED - run WF-2 to enrich them.")

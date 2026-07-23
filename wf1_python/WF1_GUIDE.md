@@ -22,9 +22,18 @@ CSV / free sources  →  DISCOVERED (WF-1 = this)  →  ENRICHED (WF-2)  →  QU
 | File | Does |
 |---|---|
 | `config.py` | reuses WF-3's DB password; valid region codes; depletion threshold |
-| `db.py` | insert company/lead, dedup by domain, discovery_cells accounting, audit log |
-| `wf1.py` | reads the CSV, normalizes rows, inserts DISCOVERED |
+| `db.py` | insert company/lead, dedup by domain, discovery_cells accounting, `city_bbox` geocode cache, audit log |
+| `wf1.py` | reads a CSV, normalizes rows, inserts DISCOVERED (the LinkedIn/Upwork/Fiverr lane) |
+| `intake.py` | auto-evaluate each candidate vs `targets.py` → APPROVE / REJECT / PENDING |
+| `targets.py` | who we want: regions, employee range, chain blocklist, per-region city pools |
+| `collect_osm.py` | **bot-osm** — OpenStreetMap (Nominatim→Overpass), bbox-cached, governed |
+| `collect_jobs.py` | **bot-remoteok / bot-remotive** — free job feeds (hiring intent), governed |
+| `collect_maps.py` | **bot-gmaps** — Google Maps scrape behind the 5-layer safety trigger (Playwright + proxy) |
 | `sample_leads.csv` | a ready-to-run example (6 businesses across 6 cells) |
+
+> All collectors call the shared **`scripts/governor.py`** before working (per-source daily caps + a
+> `rest_until` backoff on rate-limits/blocks) so a scheduled loop can never get a source flagged/banned.
+> See `DEPLOYMENT_PLAN.md` for the full bot fleet + per-source anti-flag design.
 
 ## Run it (uses the WF-3 venv)
 From this folder (`wf1_python`):
@@ -46,24 +55,27 @@ website_url, phone, employee_count, tech_stack, first_name, last_name, job_title
 - **Free enrichment tip:** if you already know `employee_count`, `tech_stack`, or the contact's
   `email`, put them in the CSV. Then WF-2 only has to fill/verify the gaps.
 
-## Human-in-the-loop review queue (the main discovery path now)
-Per the blueprint ("bots discover, humans act"), finds land in a `discovery_candidates` staging
-table and a human approves them before they enter the pipeline — junk never touches real leads.
+## Auto-intake (hands-off — "bots discover, humans act on the pitch")
+Every find (collector or CSV) funnels through `intake.py` into the `discovery_candidates` staging table
+and is auto-evaluated against `targets.py`: meets the rules → auto-APPROVE (becomes a `DISCOVERED` lead
+and flows into WF-2/WF-3); clearly fails → auto-REJECT; genuinely ambiguous → PENDING. The human reviews
+the **pitch** before outreach, not every company. (The old manual "Add/Review" dashboard tab was removed —
+discovery is automation-only now.)
 
 - **Setup once:** `..\wf3_python\.venv\Scripts\python.exe init_db.py` (creates `discovery_candidates`).
-- **Use it:** open the dashboard → **Review** tab (http://localhost:5000/review).
-  - **Add a company** you found on LinkedIn / Upwork / Fiverr / Google Maps / anywhere (you browse
-    those normally; the bot never touches them — that's the compliant "human touch").
-  - **Approve** → it becomes a `DISCOVERED` lead and flows into WF-2/WF-3. **Reject** → dropped.
-- Free auto-collectors (below) will feed this same queue by inserting rows with `source='osm'` etc.
 
-## Free "real" discovery sources to add later (no paid keys)
-Each would be a new importer calling the same `db.insert_company` / `db.insert_lead`:
-- **OpenStreetMap Overpass API** — businesses by city + category (no key, no card). Replaces paid Google Maps for discovery.
-- **Job-board feeds for hiring intent** (Segment B signal): Greenhouse & Lever public JSON boards,
-  RemoteOK API, Hacker News "who's hiring". All free.
+## Discovery sources (all implemented, all free unless noted)
+Each collector calls `db.insert_company` / `db.insert_lead` via `intake.submit()` and is governed by
+`scripts/governor.py`:
+- **OpenStreetMap** (`collect_osm.py`, bot-osm) — businesses by city + category via Nominatim→Overpass
+  (no key, no card). The free replacement for paid Google Maps. Geocodes cached in `city_bbox`.
+- **Job boards** (`collect_jobs.py`, bot-remoteok / bot-remotive) — RemoteOK + Remotive hiring-intent feeds.
+- **Google Maps** (`collect_maps.py`, bot-gmaps) — direct scrape behind the 5-layer safety trigger; needs
+  Playwright + a residential proxy (`GMAPS_PROXIES`) and stays inert otherwise. See `DEPLOYMENT_PLAN.md §4.1`.
+- **LinkedIn / Fiverr / Upwork** — CSV lane only (ban risk): drop a CSV in `inbox/` (bot-csv) or run
+  `wf1.py <csv>`. The server never scrapes those platforms.
 
-## Note on the current WF-2
-WF-2 is in **mock mode** and only recognizes its own demo domains, so CSV-imported leads won't
-auto-enrich yet. The next step is a **free-enrichment mode** for WF-2 (dnspython MX/email check +
-tech detection from the site + Lighthouse) so these real/free leads flow all the way through.
+## WF-2 enrichment
+WF-2 runs in **free mode by default** (`config.ENRICH_MODE=free`): dnspython MX/email check + site tech
+detection + deep Contact/About email scraping (+ optional Lighthouse). CSV-imported and collector leads
+flow all the way through — no paid keys, no mock domains required.

@@ -12,20 +12,31 @@ GRANJUR_ADDRESS (physical mailing address required by law in the footer).
 """
 import argparse
 import os
+import random
 import sys
+import time
 from datetime import datetime, timezone
 
 # Phase-2 scheduling gate lives in wf3_python (single source of truth, shared with the dashboard
 # advisor). Phases run as separate processes; the shared-package refactor is deferred (Guide.md §5).
 # APPEND (not insert-0) so wf4_python's own db.py/config.py still win — we only want `sendwindows`.
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wf3_python"))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 import sendwindows  # noqa: E402
+import governor     # noqa: E402
 
 import db
 import domain_health
 import outreach
 import revalidate
 import send_gmail
+
+# Anti-burst drip: pause a randomized interval between consecutive LIVE sends so outbound never looks
+# like a machine-gun batch (a strong Gmail spam heuristic). Only applied to real company sends.
+SEND_JITTER_MIN = float(os.getenv("GRANJUR_SEND_JITTER_MIN", "45"))
+SEND_JITTER_MAX = float(os.getenv("GRANJUR_SEND_JITTER_MAX", "120"))
+# How long bot-send parks itself when the bounce circuit breaker trips (protects reputation).
+SEND_BOUNCE_PARK_HOURS = float(os.getenv("GRANJUR_SEND_BOUNCE_PARK_HOURS", "18"))
 
 
 def _send_live(payload, to_override=None, subject_override=None):
@@ -100,9 +111,27 @@ def main():
                              + "\nFix DNS or pass --ignore-window to override.")
         warmup_cap, warmup_used0 = w["cap"], w["sent_today"]
 
+        # Gate 4c (Phase 7): honor a governor 'send' rest (a prior bounce-breaker park or health pause),
+        # and trip the BOUNCE CIRCUIT BREAKER before a single email goes out. Live sends only.
+        if not outreach.DRY_RUN and not args.test:
+            gs = governor.can_run(conn, "send")
+            if not gs["ok"] and not args.ignore_window:
+                raise SystemExit(f"bot-send is resting ({gs['reason']}) until {gs['rest_until']}. "
+                                 "Fix the cause, then pass --ignore-window to override once.")
+            bs = domain_health.bounce_stats(conn)
+            if bs["tripped"]:
+                governor.park(conn, "send", hours=SEND_BOUNCE_PARK_HOURS, reason="bounce breaker")
+                raise SystemExit(
+                    f"Refusing to send: bounce rate {bs['rate']:.1%} over the last {bs['window_days']}d "
+                    f"({bs['bounces']}/{bs['sends']}) exceeds the {bs['ceil']:.0%} ceiling. "
+                    f"bot-send parked {SEND_BOUNCE_PARK_HOURS:.0f}h — clean the list before resuming.")
+            if bs["sample_ok"]:
+                print(f"Bounce health: {bs['rate']:.1%} over {bs['window_days']}d "
+                      f"({bs['bounces']}/{bs['sends']}) — under the {bs['ceil']:.0%} ceiling.\n")
+
         sent = suppressed = failed = held = 0
         held_by_region = {}
-        for l in leads:
+        for idx, l in enumerate(leads):
             # Gate 2 (compliance): re-validate the email at send-time; never mail a dead address
             if revalidate.check(l["email"]) == "invalid":
                 if not args.test:
@@ -185,6 +214,13 @@ def main():
             conn.commit()
             sent += 1
             print(f"  SENT       {l['legal_name']:<28} -> {payload['email']}")
+
+            # Anti-burst drip: cool down a randomized interval before the next real send (never after
+            # the last lead, and never in dry-run/test where nothing real is going out).
+            if idx < len(leads) - 1:
+                delay = random.uniform(SEND_JITTER_MIN, SEND_JITTER_MAX)
+                print(f"             ...cooling down {delay:.0f}s before next send (anti-burst)")
+                time.sleep(delay)
 
         verb = 'previewed' if args.test else ('logged (DRY RUN)' if outreach.DRY_RUN else 'SENT')
         print(f"\nDone. {sent} email(s) {verb}, {held} held (outside local window), "

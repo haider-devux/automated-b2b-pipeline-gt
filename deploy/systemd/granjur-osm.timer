@@ -1,0 +1,10 @@
+# bot-osm: OpenStreetMap discovery (free). Hourly during business hours. Bbox cache + Overpass backoff.
+[Unit]
+Description=Timer for bot-osm (OpenStreetMap discovery)
+
+[Timer]
+OnCalendar=*-*-* 08..18:00:00
+Unit=granjur@osm.service
+
+[Install]
+WantedBy=timers.target

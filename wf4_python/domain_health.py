@@ -187,6 +187,38 @@ def sent_today(conn):
         return cur.fetchone()[0]
 
 
+# ------------------------------------------------------------------ bounce circuit breaker
+# The #1 signal that a list/identity is going bad. If the trailing-window bounce rate crosses the
+# ceiling (on a big enough sample), bot-send parks itself for the day (governor) rather than keep
+# torching reputation. Complaint tracking isn't available on consumer Gmail, so this is bounce-based.
+BOUNCE_RATE_CEIL   = float(os.getenv("GRANJUR_BOUNCE_RATE_CEIL", "0.03"))    # 3%
+BOUNCE_MIN_SAMPLE  = int(os.getenv("GRANJUR_BOUNCE_MIN_SAMPLE", "20"))       # don't trip on tiny samples
+BOUNCE_WINDOW_DAYS = int(os.getenv("GRANJUR_BOUNCE_WINDOW_DAYS", "7"))
+
+
+def bounce_stats(conn, window_days=None):
+    """Trailing-window bounce rate. Returns dict: sends, bounces, rate, tripped, ceil, sample_ok.
+    `tripped` is True only when the sample is large enough AND the rate exceeds the ceiling."""
+    window_days = window_days or BOUNCE_WINDOW_DAYS
+    if conn is None:
+        return {"sends": 0, "bounces": 0, "rate": 0.0, "tripped": False,
+                "ceil": BOUNCE_RATE_CEIL, "sample_ok": False, "window_days": window_days}
+    with conn.cursor() as cur:
+        cur.execute("""SELECT COUNT(*) FROM outreach_log
+                        WHERE outcome IN ('sent','logged')
+                          AND created_at >= now() - make_interval(days => %s);""", (window_days,))
+        sends = cur.fetchone()[0]
+        cur.execute("""SELECT COUNT(*) FROM email_events
+                        WHERE event_type = 'bounce'
+                          AND at >= now() - make_interval(days => %s);""", (window_days,))
+        bounces = cur.fetchone()[0]
+    rate = (bounces / sends) if sends else 0.0
+    sample_ok = sends >= BOUNCE_MIN_SAMPLE
+    return {"sends": sends, "bounces": bounces, "rate": rate,
+            "tripped": sample_ok and rate > BOUNCE_RATE_CEIL,
+            "ceil": BOUNCE_RATE_CEIL, "sample_ok": sample_ok, "window_days": window_days}
+
+
 def warmup_status(conn=None, sent=None, today=None):
     age = account_age_days(today)
     cap = daily_cap(age)

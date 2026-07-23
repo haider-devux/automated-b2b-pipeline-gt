@@ -1,0 +1,10 @@
+# bot-enrich: site email + tech extraction. Every 20 min, business hours. Polite inter-fetch delay.
+[Unit]
+Description=Timer for bot-enrich (WF-2 enrichment)
+
+[Timer]
+OnCalendar=*-*-* 08..18:05/20:00
+Unit=granjur@enrich.service
+
+[Install]
+WantedBy=timers.target

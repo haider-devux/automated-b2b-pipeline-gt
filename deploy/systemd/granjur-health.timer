@@ -1,0 +1,10 @@
+# bot-health: bounce parse + domain-health gate. Once each morning. Parks bot-send if the identity fails.
+[Unit]
+Description=Timer for bot-health (bounce parse + domain health)
+
+[Timer]
+OnCalendar=*-*-* 07:30:00
+Unit=granjur@health.service
+
+[Install]
+WantedBy=timers.target

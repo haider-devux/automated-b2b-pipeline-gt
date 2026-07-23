@@ -1,0 +1,10 @@
+# bot-export: nightly Excel snapshot + central-database update. Once at night. No network.
+[Unit]
+Description=Timer for bot-export (Excel snapshot + central DB)
+
+[Timer]
+OnCalendar=*-*-* 23:30:00
+Unit=granjur@export.service
+
+[Install]
+WantedBy=timers.target

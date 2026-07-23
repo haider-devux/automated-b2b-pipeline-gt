@@ -69,6 +69,35 @@ def insert_lead(conn, company_id, lead):
         return cur.fetchone()[0]
 
 
+def get_cached_bbox(conn, region, city):
+    """Return a cached (south, west, north, east) bbox for this city, or None on a miss.
+    Lets bot-osm geocode each city with Nominatim ONCE instead of every run (the real long-run
+    Nominatim-ban risk). Table created by database/phase7_governor_migration.sql."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT south, west, north, east FROM city_bbox WHERE region=%s AND city=%s;",
+            (region, city))
+        row = cur.fetchone()
+    if not row or any(v is None for v in row):
+        return None
+    return (float(row[0]), float(row[1]), float(row[2]), float(row[3]))
+
+
+def cache_bbox(conn, region, city, bbox):
+    """Persist a freshly geocoded (south, west, north, east) bbox so we never re-geocode this city.
+    Idempotent upsert; commits so the cache survives regardless of the caller's transaction."""
+    s, w, n, e = bbox
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO city_bbox (region, city, south, west, north, east)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+               ON CONFLICT (region, city)
+                   DO UPDATE SET south=EXCLUDED.south, west=EXCLUDED.west,
+                                 north=EXCLUDED.north, east=EXCLUDED.east, geocoded_at=now();""",
+            (region, city, s, w, n, e))
+    conn.commit()
+
+
 def upsert_cell(conn, region, city, niche, seen, new):
     """Update depletion accounting for a (region, city, niche) cell for this run."""
     with conn.cursor(cursor_factory=RealDictCursor) as cur:

@@ -1,0 +1,12 @@
+# bot-gmaps: Google Maps scraper — LOW & SLOW (highest-risk bot). One session every 2h, business hrs.
+# The 5-layer safety trigger (per-run/per-day caps, min-interval, block detector, jitter) lives in the
+# bot; this timer just biases WHEN it may run. Day cap (GMAPS_MAX_PER_DAY=30) is the real ceiling.
+[Unit]
+Description=Timer for bot-gmaps (Google Maps scraper)
+
+[Timer]
+OnCalendar=*-*-* 08,10,12,14,16,18:20:00
+Unit=granjur@gmaps.service
+
+[Install]
+WantedBy=timers.target

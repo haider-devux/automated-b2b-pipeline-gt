@@ -1,0 +1,10 @@
+# bot-qualify: segment + local-LLM pitch (Ollama). Every 30 min, business hours. CPU-bound, no external limit.
+[Unit]
+Description=Timer for bot-qualify (WF-3 qualify + pitch)
+
+[Timer]
+OnCalendar=*-*-* 08..18:10/30:00
+Unit=granjur@qualify.service
+
+[Install]
+WantedBy=timers.target

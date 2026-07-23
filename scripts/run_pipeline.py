@@ -16,8 +16,9 @@ decoupled phases end-to-end and stops when today's send budget is filled:
                                                  from free public sources (OSM website+email + fallback CSV)
     5. SEND       (wf4_python/wf4.py)            send them (dry-run unless GRANJUR_DRY_RUN=0)
     6. FOLLOW-UP  (wf4_python/followup.py)       send any drip nudges that are due
-    7. EXPORT     (export_leads_csv.py)          write a dated .xlsx snapshot + update the one central
-                                                 database (exports/granjur_central.xlsx)
+    7. EXPORT     (export_leads_csv.py)          write exports/discovered.xlsx (raw discovery lake +
+                                                 By-Source sheet), a dated snapshot, and update the central
+                                                 CRM (exports/granjur_central.xlsx, journey on Latest Leads)
 
 TARGET is a FIXED daily quota of send-ready leads (default 19 — override with GRANJUR_DAILY_TARGET or
 --count). Only leads that actually reach outreach count toward it; ERROR / NEEDS_CONTACT never do.

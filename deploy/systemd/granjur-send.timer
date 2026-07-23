@@ -1,0 +1,11 @@
+# bot-send: outreach DRIP. Every 20 min, business hours; each tick sends ~5 emails jittered 45-120s apart.
+# Per-recipient local-time gate, warmup cap, and bounce breaker are all enforced inside wf4.py.
+[Unit]
+Description=Timer for bot-send (WF-4 outreach drip)
+
+[Timer]
+OnCalendar=*-*-* 08..18:00/20:00
+Unit=granjur@send.service
+
+[Install]
+WantedBy=timers.target

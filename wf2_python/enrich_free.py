@@ -12,6 +12,7 @@ Every step is wrapped so one failure never halts the lead (partial success).
 """
 import html as _htmllib
 import re
+import time
 import config
 import requests
 
@@ -309,7 +310,9 @@ def find_email_deep(domain, homepage_html):
             seen.add(url)
             candidates.append(url)
 
-    for url in candidates[:_MAX_CONTACT_PAGES]:
+    for i, url in enumerate(candidates[:_MAX_CONTACT_PAGES]):
+        if i:
+            time.sleep(config.FREE_FETCH_DELAY)   # be polite — pause between extra fetches to the SAME host
         try:
             r = requests.get(url, timeout=config.FREE_HTTP_TIMEOUT,
                              headers={"User-Agent": config.FREE_USER_AGENT})
